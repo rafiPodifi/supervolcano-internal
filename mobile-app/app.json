@@ -1,0 +1,97 @@
+{
+  "expo": {
+    "name": "SuperVolcano Camera",
+    "slug": "supervolcano-camera",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#2563eb"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.supervolcano.camera",
+      "buildNumber": "26",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to record videos at work locations.",
+        "NSMicrophoneUsageDescription": "This app needs microphone access to record videos with audio.",
+        "NSBluetoothAlwaysUsageDescription": "SuperVolcano uses Bluetooth to connect to your GoPro camera for automatic recording",
+        "NSBluetoothPeripheralUsageDescription": "SuperVolcano uses Bluetooth to connect to your GoPro camera",
+        "NSLocationWhenInUseUsageDescription": "SuperVolcano uses your location to auto-fill your property address",
+        "UIBackgroundModes": [
+          "bluetooth-central",
+          "fetch",
+          "processing"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2563eb"
+      },
+      "package": "com.supervolcano.camera",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "SuperVolcano needs camera access to record walkthrough videos",
+          "enableMicrophonePermission": true,
+          "microphonePermissionText": "SuperVolcano needs microphone access to record audio"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow SuperVolcano to access your camera to record videos."
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": [
+            "peripheral",
+            "central"
+          ],
+          "bluetoothAlwaysPermission": "Allow SuperVolcano Camera to connect to your GoPro camera"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SuperVolcano uses your location to auto-fill your property address"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "88f8aa67-5bcd-49af-8bee-f4502c1d1ff7"
+      },
+      "firebaseApiKey": "AIzaSyBJd8_A8tH6e2S5WhgwHqoeXIB58WQWDvw",
+      "firebaseAuthDomain": "super-volcano-oem-portal.firebaseapp.com",
+      "firebaseProjectId": "super-volcano-oem-portal",
+      "firebaseStorageBucket": "super-volcano-oem-portal.firebasestorage.app",
+      "firebaseMessagingSenderId": "243745387315",
+      "firebaseAppId": "1:243745387315:web:88448a0ee710a8fcc2c446"
+    }
+  }
+}

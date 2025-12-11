@@ -1,0 +1,22 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	ignorecase = true
+	precomposeunicode = true
+[remote "origin"]
+	url = https://github.com/Chrisvolcano/supervolcano-teleops.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+	vscode-merge-base = origin/main
+[branch "main"]
+	vscode-merge-base = origin/main
+[remote "upstream"]
+	url = https://github.com/rafiPodifi/supervolcano-internal.git
+	fetch = +refs/heads/*:refs/remotes/upstream/*
+[user]
+	name = rafiPodifi
+	email = rafi@podifi.ai

@@ -1,0 +1,6 @@
+.env.local
+node_modules/
+.expo/
+# Ignore local UVCCamera repo clone
+UVCCamera/
+UVCAndroid/
