@@ -13,7 +13,7 @@ export type UvcCameraModuleType = {
   listDevices(): Promise<UvcDeviceInfo[]>;
   requestPermission(deviceId: string): Promise<boolean>;
   open(deviceId: string, opts: { resolution?: string; fps?: number; format?: string }): Promise<string>;
-  startPreview(handle: string): Promise<void>;
+  startPreview(handle: string): Promise<{ width: number; height: number }>;
   startRecording(handle: string, opts: { filePath: string; codec?: string; container?: string }): Promise<void>;
   stopRecording(handle: string): Promise<void>;
   close(handle: string): Promise<void>;

@@ -14,7 +14,7 @@ export function useAndroidUvcSource(): {
   devices: UvcDeviceInfo[];
   selectDevice: (id: string) => Promise<void>;
   open: (deviceId: string) => Promise<string | null>;
-  startPreview: (handle: string) => Promise<void>;
+  startPreview: (handle: string) => Promise<{ width: number; height: number } | undefined>;
   startRecording: (handle: string, filePath: string, opts?: { resolution?: string; fps?: number }) => Promise<void>;
   stopRecording: (handle: string) => Promise<void>;
   close: (handle: string) => Promise<void>;
@@ -61,7 +61,7 @@ export function useAndroidUvcSource(): {
 
   const startPreview = async (handle: string) => {
     if (Platform.OS !== 'android' || !UvcCameraModule) return;
-    await UvcCameraModule.startPreview(handle);
+    return UvcCameraModule.startPreview(handle);
   };
 
   const startRecording = async (handle: string, filePath: string, opts?: { resolution?: string; fps?: number }) => {
@@ -116,4 +116,3 @@ export function useAndroidUvcSource(): {
     close,
   };
 }
-

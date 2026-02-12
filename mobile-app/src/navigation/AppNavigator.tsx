@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { View, StyleSheet } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import SplashScreen from '../components/SplashScreen';
 import LoginScreen from '../screens/LoginScreen';
@@ -16,29 +17,43 @@ const Stack = createNativeStackNavigator();
 export default function AppNavigator() {
   const { user, userProfile, loading } = useAuth();
 
-  // Show splash while checking auth
-  if (loading) {
-    return <SplashScreen onComplete={() => {}} />;
-  }
+  const renderStack = () => {
+    if (!user) {
+      return (
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Login" component={LoginScreen} />
+        </Stack.Navigator>
+      );
+    }
 
-  // Not logged in
-  if (!user) {
-    return (
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Login" component={LoginScreen} />
-      </Stack.Navigator>
-    );
-  }
+    const role = userProfile?.role;
+    console.log('[AppNavigator] User role:', role);
 
-  // Logged in - route based on role
-  const role = userProfile?.role;
-  console.log('[AppNavigator] User role:', role);
+    if (role === 'location_owner') {
+      return <OwnerNavigator />;
+    }
 
-  if (role === 'location_owner') {
-    return <OwnerNavigator />;
-  }
+    return <CleanerNavigator />;
+  };
 
-  // Default to cleaner flow (location_cleaner, oem_teleoperator, etc.)
-  return <CleanerNavigator />;
+  return (
+    <View style={styles.root}>
+      {renderStack()}
+      {loading && (
+        <View style={styles.splashOverlay} pointerEvents="box-none">
+          <SplashScreen onComplete={() => {}} />
+        </View>
+      )}
+    </View>
+  );
 }
 
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  splashOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+});

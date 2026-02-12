@@ -6,10 +6,13 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 import { VideoUploadService } from './video-upload.service';
 
 const QUEUE_STORAGE_KEY = '@upload_queue';
 const VIDEOS_DIR = `${FileSystem.documentDirectory}videos/`;
+const PUBLIC_VIDEOS_ANDROID = 'file:///storage/emulated/0/Movies/supervolcano/';
+const SAF_DIR_KEY = '@upload_queue_saf_dir';
 const MAX_RETRIES = 5;
 const RETRY_DELAYS = [1000, 5000, 15000, 60000, 300000]; // 1s, 5s, 15s, 1m, 5m
 
@@ -101,7 +104,9 @@ class UploadQueueServiceClass {
 
     // Generate unique ID
     const id = `vid_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const filename = `${id}.mov`;
+    const extMatch = tempVideoUri.match(/\\.([a-zA-Z0-9]{2,4})(\\?.*)?$/);
+    const ext = extMatch && extMatch[1] ? extMatch[1].toLowerCase() : 'mp4';
+    const filename = `${id}.${ext}`;
     const persistentPath = `${VIDEOS_DIR}${filename}`;
 
     try {
@@ -116,6 +121,11 @@ class UploadQueueServiceClass {
       const fileInfo = await FileSystem.getInfoAsync(persistentPath);
       if (!fileInfo.exists) {
         throw new Error('Failed to persist video file');
+      }
+
+      // Optionally duplicate to public Movies for easy manual access (best-effort)
+      if (Platform.OS === 'android') {
+        await this.copyToPublicMovies(persistentPath, filename);
       }
 
       // Create queue entry
@@ -365,6 +375,46 @@ class UploadQueueServiceClass {
     }, 30000);
   }
 
+  // Best-effort copy to public Movies; if direct copy fails (scoped storage), try SAF prompt once.
+  private async copyToPublicMovies(source: string, filename: string) {
+    // First try direct copy
+    try {
+      await FileSystem.makeDirectoryAsync(PUBLIC_VIDEOS_ANDROID, { intermediates: true });
+      const publicPath = `${PUBLIC_VIDEOS_ANDROID}${filename}`;
+      await FileSystem.copyAsync({ from: source, to: publicPath });
+      return;
+    } catch (_err) {
+      // fall through to SAF
+    }
+
+    // Use Storage Access Framework if available
+    const SAF: any = (FileSystem as any).StorageAccessFramework;
+    if (!SAF) {
+      console.warn('[UploadQueue] SAF not available for public copy');
+      return;
+    }
+
+    try {
+      // Reuse previously granted directory if stored
+      let dirUri = await AsyncStorage.getItem(SAF_DIR_KEY);
+      if (!dirUri) {
+        const perm = await SAF.requestDirectoryPermissionsAsync();
+        if (!perm.granted || !perm.directoryUri) {
+          console.warn('[UploadQueue] SAF permission not granted for public copy');
+          return;
+        }
+        dirUri = perm.directoryUri;
+        await AsyncStorage.setItem(SAF_DIR_KEY, dirUri);
+      }
+      const mime = 'video/mp4';
+      const uri = await SAF.createFileAsync(dirUri, filename, mime);
+      const content = await FileSystem.readAsStringAsync(source, { encoding: FileSystem.EncodingType.Base64 });
+      await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.Base64 });
+    } catch (err) {
+      console.warn('[UploadQueue] SAF copy failed:', err);
+    }
+  }
+
   /**
    * Notify all listeners of status change
    */
@@ -375,4 +425,3 @@ class UploadQueueServiceClass {
 }
 
 export const UploadQueueService = new UploadQueueServiceClass();
-

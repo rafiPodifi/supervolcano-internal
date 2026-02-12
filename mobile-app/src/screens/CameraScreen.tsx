@@ -5,7 +5,7 @@
  * Uses react-native-vision-camera for physical lens selection
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,8 +19,11 @@ import {
   AppState,
   AppStateStatus,
   Linking,
+  LayoutChangeEvent,
+  Modal,
+  Dimensions,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets, type EdgeInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import {
   Camera,
@@ -39,9 +42,10 @@ import * as Haptics from 'expo-haptics';
 import { getAvailableSources } from '@/camera/sourceRegistry';
 import type { CameraSource } from '@/camera/types';
 import { useUvcDeviceStatus } from '@/hooks/useUvcDeviceStatus';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { UvcCameraModule, UvcCameraEvents } from '@/native/UvcCameraModule';
 import { requireNativeComponent } from 'react-native';
+import type { UserProfile } from '@/types/user.types';
 
 const SEGMENT_DURATION = 300; // 5 minutes in seconds
 const isAndroid = Platform.OS === 'android';
@@ -49,16 +53,26 @@ const isAndroid = Platform.OS === 'android';
 type LensType = 'ultra-wide' | 'wide' | 'telephoto';
 
 const NativeUvcView = isAndroid ? requireNativeComponent('RNUvcCameraView') : null;
+const FIXED_PREVIEW_WIDTH = 1280;
+const FIXED_PREVIEW_HEIGHT = 720;
+const FIXED_PREVIEW_ASPECT = FIXED_PREVIEW_WIDTH / FIXED_PREVIEW_HEIGHT;
 
-export default function CameraScreen({ route, navigation }: any) {
-  const { locationId, address } = route.params || {};
-  const { user } = useAuth();
-  const insets = useSafeAreaInsets();
+type CameraScreenContentProps = {
+  navigation: any;
+  locationId: string;
+  address?: string;
+  insets: EdgeInsets;
+  user: UserProfile;
+};
+
+function CameraScreenContent({
+  navigation,
+  locationId,
+  address,
+  insets,
+  user,
+}: CameraScreenContentProps) {
   const cameraRef = useRef<Camera>(null);
-
-  // Permissions
-  const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
-  const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } = useMicrophonePermission();
 
   // Lens selection state - default to ultra-wide
   const [selectedLens, setSelectedLens] = useState<LensType>('wide');
@@ -112,6 +126,13 @@ export default function CameraScreen({ route, navigation }: any) {
   const [externalHandle, setExternalHandle] = useState<string | null>(null);
   const [externalReady, setExternalReady] = useState(false);
   const [externalDeviceId, setExternalDeviceId] = useState<string | null>(null);
+  const externalHandleRef = useRef<string | null>(null);
+  const initialDims = Dimensions.get('window');
+  const [previewContainerWidth, setPreviewContainerWidth] = useState(initialDims.width);
+  const [previewContainerHeight, setPreviewContainerHeight] = useState(initialDims.height);
+  const [externalResolution, setExternalResolution] = useState<{ width: number; height: number } | null>(null);
+  const [showResolutionDialog, setShowResolutionDialog] = useState(false);
+  const [hasShownResolutionDialog, setHasShownResolutionDialog] = useState(false);
 
   // Animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -135,29 +156,6 @@ export default function CameraScreen({ route, navigation }: any) {
     };
   }, []);
 
-  // Listen for external recording events
-  useEffect(() => {
-    if (!isAndroid || !UvcCameraEvents) return;
-    const subComplete = UvcCameraEvents.addListener('recordingComplete', async (evt: any) => {
-      const filePath = evt?.filePath;
-      if (!filePath || !locationId || !user) return;
-      try {
-        await UploadQueueService.addToQueue(filePath, locationId, user.uid, user.organizationId);
-        showToast('Video saved from external cam', 'success');
-      } catch (e) {
-        console.error('[Camera] Queue add failed for external:', e);
-      }
-    });
-    const subError = UvcCameraEvents.addListener('error', (evt: any) => {
-      const message = evt?.message || 'External camera error';
-      Alert.alert('External camera', message);
-    });
-    return () => {
-      subComplete.remove();
-      subError.remove();
-    };
-  }, [isAndroid, locationId, user, showToast]);
-
   // Populate camera sources (phone default, external placeholder on Android)
   useEffect(() => {
     const sources = getAvailableSources();
@@ -171,19 +169,90 @@ export default function CameraScreen({ route, navigation }: any) {
 
   const selectedSource = availableSources.find((s) => s.id === selectedSourceId);
   const isExternalSelected = selectedSource?.type === 'external';
-  const externalConnected = isExternalSelected && isAndroid && uvcStatus.available && uvcStatus.connected;
-
+  const externalConnected = isAndroid && uvcStatus.available && uvcStatus.connected;
+  const showExternalPreview = isExternalSelected && isAndroid;
+  const externalPreviewSupported = isAndroid && !!NativeUvcView && uvcStatus.available;
+  const externalPreviewReady = showExternalPreview && externalPreviewSupported && uvcStatus.connected && externalReady;
+  const externalRecordDisabled = isExternalSelected && !externalPreviewReady;
+  const formatDimension = (value: number) => (Number.isFinite(value) && value > 0 ? Math.round(value) : '—');
+  const viewportWidthLabel = formatDimension(previewContainerWidth);
+  const viewportHeightLabel = formatDimension(previewContainerHeight);
+  const previewAspect = useMemo(() => {
+    if (externalResolution?.width && externalResolution?.height) {
+      const aspect = externalResolution.width / externalResolution.height;
+      return aspect > 0 ? aspect : FIXED_PREVIEW_ASPECT;
+    }
+    return FIXED_PREVIEW_ASPECT;
+  }, [externalResolution]);
+  const previewBoxSize = useMemo(() => {
+    if (previewContainerWidth <= 0 || previewContainerHeight <= 0) {
+      return { width: 0, height: 0 };
+    }
+    return {
+      width: previewContainerWidth,
+      height: previewContainerHeight,
+    };
+  }, [previewContainerWidth, previewContainerHeight]);
+  const previewContentSize = useMemo(() => {
+    if (previewContainerWidth <= 0 || previewAspect <= 0) {
+      return { width: 0, height: 0 };
+    }
+    return {
+      width: previewContainerWidth,
+      height: previewContainerWidth / previewAspect,
+    };
+  }, [previewContainerWidth, previewAspect]);
+  const livePreviewWidthLabel = formatDimension(previewContentSize.width);
+  const livePreviewHeightLabel = formatDimension(previewContentSize.height);
   // Prepare external camera when selected (Android only)
   useEffect(() => {
     let cancelled = false;
     if (!isExternalSelected || !isAndroid) {
       setExternalReady(false);
       setExternalHandle(null);
+      externalHandleRef.current = null;
       setExternalDeviceId(null);
+      setExternalResolution(null);
+      setShowResolutionDialog(false);
+      setHasShownResolutionDialog(false);
       return;
     }
 
+    const closeHandle = (handle?: string | null) => {
+      const target = handle ?? externalHandleRef.current;
+      if (target) {
+        UvcCameraModule?.close(target).catch(() => {});
+      }
+      externalHandleRef.current = null;
+    };
+
     const prepareExternal = async () => {
+      const startPreviewWithRetry = async (handle: string) => {
+        for (let i = 0; i < 15; i++) {
+          try {
+            const info = await UvcCameraModule?.startPreview(handle);
+            if (info?.width && info?.height && info.height !== 0) {
+              setExternalResolution((prev) => {
+                if (!prev || prev.width !== info.width || prev.height !== info.height) {
+                  setHasShownResolutionDialog((shown) => {
+                    if (!shown) {
+                      setShowResolutionDialog(true);
+                    }
+                    return true;
+                  });
+                  return { width: info.width, height: info.height };
+                }
+                return prev;
+              });
+            }
+            return true;
+          } catch (err) {
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
+        }
+        return false;
+      };
+
       try {
         const deviceId = uvcStatus.devices[0]?.id;
         if (!deviceId) {
@@ -197,10 +266,13 @@ export default function CameraScreen({ route, navigation }: any) {
           setExternalReady(false);
           return;
         }
+        closeHandle();
+        externalHandleRef.current = handle;
         setExternalHandle(handle);
-        await UvcCameraModule?.startPreview(handle);
+        setExternalReady(false);
+        const ok = await startPreviewWithRetry(handle);
         if (!cancelled) {
-          setExternalReady(true);
+          setExternalReady(ok);
         }
       } catch (e) {
         console.error('[Camera] External prepare error:', e);
@@ -212,11 +284,10 @@ export default function CameraScreen({ route, navigation }: any) {
 
     return () => {
       cancelled = true;
-      if (externalHandle) {
-        UvcCameraModule?.close(externalHandle).catch(() => {});
-      }
+      closeHandle();
+      setExternalReady(false);
     };
-  }, [isExternalSelected, isAndroid, uvcStatus.devices]);
+  }, [isExternalSelected, isAndroid, uvcStatus.devices, uvcStatus.connected]);
 
   // If current lens isn’t available, fall back to the first available lens
   useEffect(() => {
@@ -402,15 +473,135 @@ export default function CameraScreen({ route, navigation }: any) {
     }
   }, [onRecordingFinished, onRecordingError]);
 
+  const startExternalSegment = useCallback(async () => {
+    const handle = externalHandleRef.current || externalHandle;
+    if (!handle) {
+      throw new Error('External camera not initialized. Try reconnecting the device.');
+    }
+
+    const dir = `${FileSystem.documentDirectory}uvc`;
+    try {
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    } catch (_error) {
+      // Directory may already exist
+    }
+
+    const filePath = `${dir}/${Date.now()}`;
+    await UvcCameraModule?.startRecording(handle, {
+      filePath,
+      fps: 30,
+      durationSec: SEGMENT_DURATION,
+    });
+    setIsRecording(true);
+  }, [externalHandle]);
+
+  useEffect(() => {
+    if (!isAndroid || !UvcCameraEvents) return;
+    const subAspect = UvcCameraEvents.addListener('uvcPreviewAspect', (evt: any) => {
+      const width = evt?.width;
+      const height = evt?.height;
+      if (typeof width === 'number' && typeof height === 'number' && height > 0) {
+        setExternalResolution((prev) => {
+          if (!prev || prev.width !== width || prev.height !== height) {
+            setHasShownResolutionDialog((shown) => {
+              if (!shown) {
+                setShowResolutionDialog(true);
+              }
+              return true;
+            });
+            return { width, height };
+          }
+          return prev;
+        });
+      }
+    });
+    return () => {
+      subAspect.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!uvcStatus.connected) {
+      setHasShownResolutionDialog(false);
+      setShowResolutionDialog(false);
+      setExternalResolution(null);
+    }
+  }, [uvcStatus.connected]);
+
+  useEffect(() => {
+    const sub = Dimensions.addEventListener('change', ({ window }) => {
+      setPreviewContainerWidth(window.width);
+      setPreviewContainerHeight(window.height);
+    });
+    return () => {
+      // RN 0.71+ returns an event subscription with remove()
+      // @ts-ignore - safe for both shapes
+      sub?.remove?.();
+    };
+  }, []);
+
+  const stopExternalRecording = useCallback(async () => {
+    const handle = externalHandleRef.current || externalHandle;
+    if (!handle || !isRecording) return;
+    try {
+      await UvcCameraModule?.stopRecording(handle);
+    } catch (error) {
+      console.error('[Camera] External stop recording error:', error);
+    } finally {
+      setIsRecording(false);
+    }
+  }, [externalHandle, isRecording]);
+
+  // Listen for external recording events
+  useEffect(() => {
+    if (!isAndroid || !UvcCameraEvents) return;
+
+    const subComplete = UvcCameraEvents.addListener('recordingComplete', async (evt: any) => {
+      const filePath = evt?.filePath;
+      if (!filePath || !locationId || !user) return;
+      const fileUri = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
+      try {
+        setIsRecording(false);
+        setSegmentsRecorded((prev) => prev + 1);
+        await UploadQueueService.addToQueue(fileUri, locationId, user.uid, user.organizationId);
+        showToast('Video saved from external cam', 'success');
+
+        if (sessionActiveRef.current) {
+          await startExternalSegment();
+        } else {
+          setIsSessionActive(false);
+        }
+      } catch (e) {
+        console.error('[Camera] Queue add failed for external:', e);
+        sessionActiveRef.current = false;
+        setIsSessionActive(false);
+        Alert.alert('External camera', 'Recording stopped due to an error.');
+      }
+    });
+
+    const subError = UvcCameraEvents.addListener('error', (evt: any) => {
+      const message = evt?.message || 'External camera error';
+      sessionActiveRef.current = false;
+      setIsSessionActive(false);
+      setIsRecording(false);
+      Alert.alert('External camera', message);
+    });
+
+    return () => {
+      subComplete.remove();
+      subError.remove();
+    };
+  }, [isAndroid, locationId, user, showToast, startExternalSegment]);
+
   // Start recording session
   const startSession = async () => {
     if (selectedSource?.type === 'external') {
       if (!isAndroid) {
-        Alert.alert('External camera (WIP)', 'External cameras are not yet supported on iOS. This is a visual preview only.');
+        Alert.alert('External camera', 'USB cameras are only supported on Android at the moment.');
         return;
       }
 
-      if (!uvcStatus.available || !externalConnected) {
+      if (!externalConnected) {
         Alert.alert(
           'External camera not ready',
           'Plug in your USB/OTG camera and grant permission. Preview must be visible before recording.',
@@ -422,26 +613,17 @@ export default function CameraScreen({ route, navigation }: any) {
         return;
       }
 
-      // External recording: start via native module
       try {
-        const fileDir = `${FileSystem.documentDirectory}uvc`;
-        await FileSystem.makeDirectoryAsync(fileDir, { intermediates: true });
-        const filePath = `${fileDir}/${Date.now()}.mp4`;
-        if (!externalHandle) {
-          Alert.alert('External camera', 'No session handle found. Try reselecting external cam.');
-          return;
-        }
-        await UvcCameraModule?.startRecording(externalHandle, {
-          filePath,
-          fps: 30,
-        });
         setIsSessionActive(true);
         sessionActiveRef.current = true;
-        setIsRecording(true);
         setElapsedTime(0);
         setSegmentsRecorded(0);
+        await startExternalSegment();
         return;
       } catch (e: any) {
+        sessionActiveRef.current = false;
+        setIsSessionActive(false);
+        setIsRecording(false);
         Alert.alert('External camera', e?.message || 'Failed to start recording.');
         return;
       }
@@ -471,12 +653,9 @@ export default function CameraScreen({ route, navigation }: any) {
       if (cameraRef.current && isRecording) {
         await cameraRef.current.stopRecording();
       }
-    } else if (externalHandle && isRecording) {
-      try {
-        await UvcCameraModule?.stopRecording(externalHandle);
-      } catch (e) {
-        console.error('[Camera] External stop recording error:', e);
-      }
+      setIsRecording(false);
+    } else {
+      await stopExternalRecording();
     }
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -531,6 +710,18 @@ export default function CameraScreen({ route, navigation }: any) {
       return `${segmentsRecorded} segment${segmentsRecorded > 1 ? 's' : ''} saved`;
     }
 
+    if (isExternalSelected) {
+      if (!externalPreviewSupported) {
+        return 'External preview unavailable on this device';
+      }
+      if (!uvcStatus.connected) {
+        return 'Connect USB camera to begin';
+      }
+      if (!externalReady) {
+        return 'Preparing external camera...';
+      }
+    }
+
     if (uploadQueue.total > 0) {
       if (uploadQueue.isUploading) {
         return `Uploading ${uploadQueue.uploading} of ${uploadQueue.total}...`;
@@ -572,63 +763,6 @@ export default function CameraScreen({ route, navigation }: any) {
     );
   };
 
-  // Request permissions
-  const requestPermissions = async () => {
-    const cameraGranted = await requestCameraPermission();
-    const micGranted = await requestMicPermission();
-    return cameraGranted && micGranted;
-  };
-
-  // Permission not yet determined
-  if (hasCameraPermission === null || hasMicPermission === null) {
-    return (
-      <View style={styles.centerContainer}>
-        <StatusBar
-          barStyle="light-content"
-          backgroundColor="transparent"
-          translucent
-        />
-        <ActivityIndicator size="large" color="#fff" />
-      </View>
-    );
-  }
-
-  // Permission denied
-  if (!hasCameraPermission || !hasMicPermission) {
-    return (
-      <View style={[styles.permissionContainer, { paddingTop: insets.top }]}>
-        <StatusBar
-          barStyle="light-content"
-          backgroundColor="transparent"
-          translucent
-        />
-        <Ionicons name="camera-outline" size={64} color="#666" />
-        <Text style={styles.permissionTitle}>Camera Access Needed</Text>
-        <Text style={styles.permissionText}>
-          We need camera and microphone access to record your session.
-        </Text>
-        <TouchableOpacity
-          onPress={requestPermissions}
-          style={styles.permissionButton}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.permissionButtonText}>Grant Permission</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => Linking.openSettings()}
-          style={styles.backLink}
-        >
-          <Text style={styles.backLinkText}>Open Settings</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backLink}
-        >
-          <Text style={styles.backLinkText}>Go Back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
 
   // No camera device available
   if (!device) {
@@ -678,51 +812,73 @@ export default function CameraScreen({ route, navigation }: any) {
     );
   }
 
-  // Main camera view
+  const externalOverlayIcon: keyof typeof Ionicons.glyphMap = !externalPreviewSupported
+    ? 'alert-circle'
+    : uvcStatus.connected
+      ? 'videocam-outline'
+      : 'alert-circle';
+  const externalOverlayMessage = !externalPreviewSupported
+    ? 'External preview is unavailable on this build/emulator.'
+    : uvcStatus.connected
+      ? 'Preparing preview...'
+      : 'No USB camera detected. Connect one to view live preview.';
+  const recordButtonDisabled = isExternalSelected ? externalRecordDisabled : false;
+  const handlePreviewLayout = useCallback((event: LayoutChangeEvent) => {
+    const width = event.nativeEvent.layout.width;
+    const height = event.nativeEvent.layout.height;
+    if (typeof width === 'number' && width > 0 && Math.abs(width - previewContainerWidth) > 1) {
+      setPreviewContainerWidth(width);
+    }
+    if (typeof height === 'number' && height > 0 && Math.abs(height - previewContainerHeight) > 1) {
+      setPreviewContainerHeight(height);
+    }
+  }, [previewContainerWidth, previewContainerHeight]);
+
   return (
     <View style={styles.container}>
-      <StatusBar
-        barStyle="light-content"
-        backgroundColor="transparent"
-        translucent
-      />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* Toast notification */}
-      <Toast
-        visible={toast.visible}
-        message={toast.message}
-        type={toast.type}
-        onHide={hideToast}
-      />
-
-      {/* Full-screen camera or external view */}
-      {isExternalSelected ? (
-        externalReady && NativeUvcView ? (
-          <NativeUvcView style={StyleSheet.absoluteFill} />
-        ) : (
-          <View style={[StyleSheet.absoluteFill, styles.externalPlaceholder]}>
-            <Ionicons name="videocam-outline" size={64} color="#666" />
-            <Text style={styles.placeholderTitle}>External camera</Text>
-            <Text style={styles.placeholderText}>
-              {isAndroid
-                ? externalConnected
-                  ? 'Preparing preview...'
-                  : 'No external cam detected yet. Plug in your USB/OTG camera to enable preview.'
-                : 'Work in progress. This is a visual preview on iOS; external UVC is not supported.'}
-            </Text>
+      <View style={styles.previewContainer} onLayout={handlePreviewLayout}>
+        {showExternalPreview ? (
+          <View style={styles.externalPreviewWrapper}>
+            <View style={[styles.externalPreviewBox, previewBoxSize]}>
+              {externalPreviewSupported && NativeUvcView ? (
+                <View
+                  style={[
+                    styles.externalPreviewSurface,
+                    {
+                      width: previewContentSize.width,
+                      height: previewContentSize.height,
+                    },
+                  ]}
+                >
+                  <NativeUvcView pointerEvents="none" style={StyleSheet.absoluteFill} />
+                </View>
+              ) : null}
+              {(!externalPreviewSupported || !uvcStatus.connected || !externalReady) && (
+                <View style={[StyleSheet.absoluteFill, styles.externalPreviewOverlay]}>
+                  <Ionicons name={externalOverlayIcon} size={56} color="#888" />
+                  <Text style={styles.placeholderTitle}>External camera</Text>
+                  <Text style={styles.placeholderText}>{externalOverlayMessage}</Text>
+                </View>
+              )}
+            </View>
           </View>
-        )
-      ) : (
-        <Camera
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive={true}
-          video={true}
-          audio={true}
-          zoom={currentZoom}
-        />
-      )}
+        ) : (
+          <Camera
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            device={device}
+            isActive
+            video
+            audio
+            zoom={currentZoom}
+          />
+        )}
+      </View>
+
+      {/* Toasts */}
+      <Toast visible={toast.visible} message={toast.message} type={toast.type} onHide={hideToast} />
 
       {/* Top floating header */}
       <View style={[styles.topContainer, { top: insets.top + 10 }]}>
@@ -769,7 +925,6 @@ export default function CameraScreen({ route, navigation }: any) {
 
       {/* Bottom floating controls */}
       <View style={[styles.bottomContainer, { bottom: insets.bottom + 30 }]}>
-        {/* Lens selector */}
         {availableSources.length > 1 && (
           <View style={styles.sourceSelector}>
             {availableSources.map((source) => (
@@ -797,7 +952,6 @@ export default function CameraScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* Lens selector (phone camera only) */}
         {!isExternalSelected && (
           <View style={styles.lensSelector}>
             {(['ultra-wide', 'wide', 'telephoto'] as LensType[]).map((lens) => (
@@ -826,18 +980,20 @@ export default function CameraScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* Timer display */}
         {isSessionActive && (
           <View style={styles.timerContainer}>
             <Text style={styles.timerText}>{formatTime(elapsedTime)}</Text>
           </View>
         )}
 
-        {/* Record button */}
         <TouchableOpacity
           onPress={handleRecordPress}
-          style={styles.recordButtonOuter}
+          style={[
+            styles.recordButtonOuter,
+            recordButtonDisabled && styles.recordButtonDisabled,
+          ]}
           activeOpacity={0.8}
+          disabled={recordButtonDisabled}
         >
           <View
             style={[
@@ -853,7 +1009,6 @@ export default function CameraScreen({ route, navigation }: any) {
           </View>
         </TouchableOpacity>
 
-        {/* Status text */}
         <TouchableOpacity
           style={styles.statusContainer}
           onPress={uploadQueue.failed > 0 ? uploadQueue.retryFailed : undefined}
@@ -876,7 +1031,119 @@ export default function CameraScreen({ route, navigation }: any) {
           </Text>
         </TouchableOpacity>
       </View>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={!!externalResolution && showResolutionDialog}
+        onRequestClose={() => setShowResolutionDialog(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>External camera ready</Text>
+            {externalResolution && (
+              <Text style={styles.modalSubtitle}>
+                Resolution {externalResolution.width} × {externalResolution.height}
+              </Text>
+            )}
+            <Text style={styles.modalSubtitle}>
+              Viewport {viewportWidthLabel} × {viewportHeightLabel}
+            </Text>
+            <Text style={styles.modalSubtitle}>
+              Live preview {livePreviewWidthLabel} × {livePreviewHeightLabel}
+            </Text>
+            <TouchableOpacity
+              style={styles.modalButton}
+              onPress={() => setShowResolutionDialog(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.modalButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
+  );
+}
+
+export default function CameraScreen({ route, navigation }: any) {
+  const { locationId, address } = route.params || {};
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const {
+    hasPermission: hasCameraPermission,
+    requestPermission: requestCameraPermission,
+  } = useCameraPermission();
+  const {
+    hasPermission: hasMicPermission,
+    requestPermission: requestMicPermission,
+  } = useMicrophonePermission();
+
+  const requestPermissions = useCallback(async () => {
+    const cameraGranted = await requestCameraPermission();
+    const micGranted = await requestMicPermission();
+    return cameraGranted && micGranted;
+  }, [requestCameraPermission, requestMicPermission]);
+
+  if (hasCameraPermission === null || hasMicPermission === null) {
+    return (
+      <View style={styles.centerContainer}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <ActivityIndicator size="large" color="#fff" />
+      </View>
+    );
+  }
+
+  if (!hasCameraPermission || !hasMicPermission) {
+    return (
+      <View style={[styles.permissionContainer, { paddingTop: insets.top }]}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <Ionicons name="camera-outline" size={64} color="#666" />
+        <Text style={styles.permissionTitle}>Camera Access Needed</Text>
+        <Text style={styles.permissionText}>
+          We need camera and microphone access to record your session.
+        </Text>
+        <TouchableOpacity
+          onPress={requestPermissions}
+          style={styles.permissionButton}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.permissionButtonText}>Grant Permission</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => Linking.openSettings()} style={styles.backLink}>
+          <Text style={styles.backLinkText}>Open Settings</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backLink}>
+          <Text style={styles.backLinkText}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (!locationId || !user) {
+    return (
+      <View style={[styles.permissionContainer, { paddingTop: insets.top }]}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <Ionicons name="location-outline" size={64} color="#666" />
+        <Text style={styles.permissionTitle}>Missing Information</Text>
+        <Text style={styles.permissionText}>
+          Location information is required to start recording.
+        </Text>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backLink}>
+          <Text style={styles.backLinkText}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <CameraScreenContent
+      navigation={navigation}
+      locationId={locationId}
+      address={address}
+      insets={insets}
+      user={user}
+    />
   );
 }
 
@@ -884,6 +1151,31 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
+  },
+  previewContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+    position: 'relative',
+  },
+  externalPreviewWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  externalPreviewBox: {
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  externalPreviewSurface: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  externalPreviewOverlay: {
+    backgroundColor: '#050505',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
   },
   centerContainer: {
     flex: 1,
@@ -897,12 +1189,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#000',
     padding: 40,
-  },
-  externalPlaceholder: {
-    backgroundColor: '#0b0b0b',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
   },
   placeholderTitle: {
     marginTop: 16,
@@ -1195,5 +1481,45 @@ const styles = StyleSheet.create({
   },
   statusTextWarning: {
     color: '#FFD60A',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#111',
+    borderRadius: 18,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  modalSubtitle: {
+    marginTop: 10,
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.85)',
+    textAlign: 'center',
+  },
+  modalButton: {
+    marginTop: 20,
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    paddingHorizontal: 36,
+    paddingVertical: 10,
+  },
+  modalButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000',
   },
 });

@@ -17,21 +17,22 @@ import AppNavigator from './src/navigation/AppNavigator';
 // Error Boundary Component
 class ErrorBoundary extends Component<
   { children: React.ReactNode },
-  { hasError: boolean; error: Error | null }
+  { hasError: boolean; error: Error | null; errorInfo: ErrorInfo | null }
 > {
   constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
 
   static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
+    return { hasError: true, error, errorInfo: null };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary] Caught error:', error);
     console.error('[ErrorBoundary] Error info:', errorInfo);
     console.error('[ErrorBoundary] Stack:', error.stack);
+    this.setState({ errorInfo });
   }
 
   render() {
@@ -48,6 +49,9 @@ class ErrorBoundary extends Component<
           <Text style={styles.errorDetails}>
             Error: {this.state.error?.toString()}
           </Text>
+          {!!this.state.errorInfo?.componentStack && (
+            <Text style={styles.errorStack}>{this.state.errorInfo.componentStack}</Text>
+          )}
         </View>
       );
     }
@@ -106,5 +110,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontFamily: 'monospace',
     marginTop: 16,
+  },
+  errorStack: {
+    fontSize: 10,
+    color: '#7f1d1d',
+    marginTop: 8,
+    fontFamily: 'monospace',
   },
 });
